@@ -2,7 +2,9 @@
 
 - 绘制工具激活时：面板编辑新标注的默认参数；
 - 选择模式下单选标注时：面板切换为该标注类型的页面并实时编辑它
-  （同时更新默认值，后续新标注沿用）。
+  （同时更新默认值，后续新标注沿用）；
+- 绘制工具下点选同类型已有标注时：临时显示并编辑该标注的属性，
+  不影响新标注的默认值。
 """
 
 from PySide6.QtCore import QSize, Qt, Signal
@@ -29,6 +31,10 @@ def _swatch(color, w=40, h=18):
     pix = QPixmap(w, h)
     pix.fill(QColor(color))
     return QIcon(pix)
+
+
+# 标注类型 -> 侧栏页面 key（默认与类型同名，仅画笔 path 特殊）
+_ANNO_PAGE = {"path": "brush"}
 
 
 class ColorButton(QPushButton):
@@ -260,7 +266,12 @@ class ToolSidebar(QDockWidget):
             sel = c._selected_annos()
             if len(sel) == 1:
                 anno = sel[0].anno
-        key = anno["type"] if anno is not None else self._tool
+        else:
+            # 绘制工具软选中同类型标注：临时显示标注自身属性，
+            # 编辑只作用于它，不影响新标注的默认值
+            anno = c.soft_selected_anno()
+        key = _ANNO_PAGE.get(anno["type"], anno["type"]) if anno is not None \
+            else self._tool
         page = self._pages.get(key)
         if page is None:
             return

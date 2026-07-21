@@ -467,6 +467,22 @@ class EditorCanvas(QGraphicsView):
         return [it for it in self._selected_annos()
                 if types is None or it.anno.get("type") in types]
 
+    def _soft_selected(self):
+        """绘制工具下软选中的同类型标注图元。
+
+        绘制工具点选已有标注时可临时编辑它（侧栏随之显示其属性），
+        这些编辑不写入新标注的默认值。
+        """
+        types = _ADJUST_TYPES.get(self._tool)
+        if not types:
+            return []
+        return self._for_selected(types)
+
+    def soft_selected_anno(self):
+        """软选中的标注数据（无则 None），供侧栏临时显示其属性。"""
+        sel = self._soft_selected()
+        return sel[0].anno if len(sel) == 1 else None
+
     def _apply(self, items, fn, geometry=False):
         """对选中图元应用修改并刷新；geometry=True 表示包围盒可能变化。"""
         changed = False
@@ -481,93 +497,112 @@ class EditorCanvas(QGraphicsView):
         return changed
 
     def set_color(self, qcolor):
-        self._color = qcolor
+        if not self._soft_selected():
+            self._color = qcolor
         self._apply(self._for_selected(
             ("rect", "ellipse", "line", "arrow", "path", "text", "number")),
             lambda a: a.__setitem__("color", qcolor.name()))
 
     def set_width(self, w):
-        self._width = w
+        if not self._soft_selected():
+            self._width = w
         self._apply(self._for_selected(("rect", "ellipse", "line", "arrow", "path")),
                     lambda a: a.__setitem__("width", w), geometry=True)
 
     def set_fill_enabled(self, enabled):
-        self._fill_enabled = enabled
+        if not self._soft_selected():
+            self._fill_enabled = enabled
         fill = self._fill_color.name() if enabled else None
         self._apply(self._for_selected(("rect", "ellipse")),
                     lambda a: a.__setitem__("fill", fill))
 
     def set_fill_color(self, qcolor):
-        self._fill_color = qcolor
-        if self._fill_enabled:
+        soft = self._soft_selected()
+        if not soft:
+            self._fill_color = qcolor
+        if soft or self._fill_enabled:
             self._apply([it for it in self._for_selected(("rect", "ellipse"))
                          if it.anno.get("fill")],
                         lambda a: a.__setitem__("fill", qcolor.name()))
 
     def set_fill_opacity(self, opacity):
-        self._fill_opacity = opacity
+        if not self._soft_selected():
+            self._fill_opacity = opacity
         self._apply([it for it in self._for_selected(("rect", "ellipse"))
                      if it.anno.get("fill")],
                     lambda a: a.__setitem__("fill_opacity", opacity))
 
     def set_font_size(self, size):
-        self._font_size = size
+        if not self._soft_selected():
+            self._font_size = size
         self._apply(self._for_selected(("text",)),
                     lambda a: a.__setitem__("font_size", size), geometry=True)
 
     def set_font_family(self, family):
-        self._font_family = family
+        if not self._soft_selected():
+            self._font_family = family
         self._apply(self._for_selected(("text",)),
                     lambda a: a.__setitem__("font_family", family), geometry=True)
 
     def set_bold(self, bold):
-        self._bold = bold
+        if not self._soft_selected():
+            self._bold = bold
         self._apply(self._for_selected(("text",)),
                     lambda a: a.__setitem__("bold", bold), geometry=True)
 
     def set_italic(self, italic):
-        self._italic = italic
+        if not self._soft_selected():
+            self._italic = italic
         self._apply(self._for_selected(("text",)),
                     lambda a: a.__setitem__("italic", italic), geometry=True)
 
     def set_outline_color(self, qcolor):
-        self._outline_color = qcolor
-        if self._outline_width > 0:
+        soft = self._soft_selected()
+        if not soft:
+            self._outline_color = qcolor
+        if soft or self._outline_width > 0:
             self._apply(self._for_selected(("text",)),
                         lambda a: a.__setitem__("outline_color", qcolor.name()))
 
     def set_outline_width(self, w):
-        self._outline_width = w
+        if not self._soft_selected():
+            self._outline_width = w
         def apply(a):
             a["outline_width"] = w
             a["outline_color"] = self._outline_color.name() if w > 0 else None
         self._apply(self._for_selected(("text",)), apply, geometry=True)
 
     def set_text_bg_enabled(self, enabled):
-        self._text_bg_enabled = enabled
+        if not self._soft_selected():
+            self._text_bg_enabled = enabled
         bg = self._text_bg_color.name() if enabled else None
         self._apply(self._for_selected(("text",)),
                     lambda a: a.__setitem__("bg_color", bg), geometry=True)
 
     def set_text_bg_color(self, qcolor):
-        self._text_bg_color = qcolor
-        if self._text_bg_enabled:
+        soft = self._soft_selected()
+        if not soft:
+            self._text_bg_color = qcolor
+        if soft or self._text_bg_enabled:
             self._apply([it for it in self._for_selected(("text",))
                          if it.anno.get("bg_color")],
                         lambda a: a.__setitem__("bg_color", qcolor.name()))
 
     def set_number_r(self, r):
-        self._number_r = r
+        if not self._soft_selected():
+            self._number_r = r
         self._apply(self._for_selected(("number",)),
                     lambda a: a.__setitem__("r", float(r)), geometry=True)
 
     def set_number_value(self, n):
-        """编辑序号值：选中序号标注时改它的值并顺推计数器；
-        无选中时设置下一个序号的起始值。"""
+        """编辑序号值：无选中时设置下一个序号的起始值；
+        选中序号标注时改它的值——绘制工具软选中不影响计数器，
+        选择模式下顺推计数器为 n+1。"""
         sel = self._for_selected(("number",))
         if sel:
             self._apply(sel, lambda a: a.__setitem__("n", n))
-            self.number_counter = n + 1
+            if not self._soft_selected():
+                self.number_counter = n + 1
         else:
             self.number_counter = n
 
@@ -575,7 +610,8 @@ class EditorCanvas(QGraphicsView):
         self._eraser_size = size
 
     def set_mosaic_block(self, block):
-        self._mosaic_block = block
+        if not self._soft_selected():
+            self._mosaic_block = block
         changed = False
         for it in self._for_selected(("mosaic",)):
             it.anno["block"] = block

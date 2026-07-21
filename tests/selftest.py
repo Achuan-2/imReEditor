@@ -392,6 +392,95 @@ def run():
     assert sidebar._ctl["number"]["序号值"].value() == 8, \
         "侧栏未同步序号计数器"
 
+    # 序号工具下软选中已有序号：侧栏临时显示其属性，编辑不影响新增默认值
+    n5.anno["color"] = "#123456"
+    n5.anno["r"] = 33.0
+    n5.anno["n"] = 7
+    n5.update()
+    c5.set_tool("number")
+    c5._scene.clearSelection()
+    sidebar.show_tool("number")
+    c5.set_color(QColor("#00AA00"))
+    c5.set_number_r(20)
+    c5.set_number_value(3)
+    assert c5._color.name() == "#00aa00" and c5._number_r == 20 \
+        and c5.number_counter == 3, "序号默认值设置失败"
+    c5._soft_select(n5)
+    ctl_n = sidebar._ctl["number"]
+    assert ctl_n["颜色"].color().name() == "#123456" \
+        and ctl_n["大小"].value() == 33 and ctl_n["序号值"].value() == 7, \
+        "序号工具软选中时侧栏未显示选中序号的属性"
+    c5.set_color(QColor("#FF0000"))
+    c5.set_number_r(40)
+    c5.set_number_value(9)
+    assert n5.anno["color"] == "#ff0000" and n5.anno["r"] == 40.0 \
+        and n5.anno["n"] == 9, "软选中编辑未作用于选中序号"
+    assert c5._color.name() == "#00aa00" and c5._number_r == 20 \
+        and c5.number_counter == 3, "软选中编辑不应影响新增序号的默认值"
+    c5._scene.clearSelection()
+    sidebar.refresh()
+    assert ctl_n["颜色"].color().name() == "#00aa00" \
+        and ctl_n["大小"].value() == 20 and ctl_n["序号值"].value() == 3, \
+        "取消选中后侧栏未恢复显示默认值"
+    c5.set_tool("select")
+
+    # 其余绘制工具同理：矩形工具软选中时显示标注属性，编辑不影响默认值
+    c5.set_tool("rect")
+    sidebar.show_tool("rect")
+    c5.set_color(QColor("#00AA00"))
+    c5.set_width(5)
+    r2 = c5.add_annotation({"type": "rect", "rect": [10, 10, 50, 40],
+                            "color": "#123456", "width": 9})
+    c5._soft_select(r2)
+    ctl_r = sidebar._ctl["rect"]
+    assert sidebar._stack.currentWidget() is sidebar._pages["rect"]
+    assert ctl_r["描边颜色"].color().name() == "#123456" \
+        and ctl_r["描边宽度"].value() == 9, "矩形工具软选中时侧栏未显示标注属性"
+    c5.set_color(QColor("#FF0000"))
+    c5.set_width(11)
+    assert r2.anno["color"] == "#ff0000" and r2.anno["width"] == 11, \
+        "软选中编辑未作用于选中矩形"
+    assert c5._color.name() == "#00aa00" and c5._width == 5, \
+        "软选中编辑不应影响新标注默认值"
+    c5._scene.clearSelection()
+    sidebar.refresh()
+    assert ctl_r["描边颜色"].color().name() == "#00aa00" \
+        and ctl_r["描边宽度"].value() == 5, "取消选中后侧栏未恢复默认值"
+
+    # 画笔工具：path 标注显示到画笔设置页
+    c5.set_tool("brush")
+    sidebar.show_tool("brush")
+    brush_item = c5.add_annotation({"type": "path",
+                                    "points": [[100, 100], [200, 200]],
+                                    "color": "#654321", "width": 8})
+    c5._soft_select(brush_item)
+    assert sidebar._stack.currentWidget() is sidebar._pages["brush"], \
+        "画笔标注未显示到画笔设置页"
+    assert sidebar._ctl["brush"]["颜色"].color().name() == "#654321" \
+        and sidebar._ctl["brush"]["线宽"].value() == 8, \
+        "画笔工具软选中时侧栏未显示标注属性"
+    c5.set_color(QColor("#0000FF"))
+    assert brush_item.anno["color"] == "#0000ff" \
+        and c5._color.name() == "#00aa00", \
+        "画笔软选中编辑不应影响新标注默认值"
+    c5._scene.clearSelection()
+
+    # 文字工具：软选中文字临时显示其样式，编辑不影响默认值
+    c5.set_tool("text")
+    sidebar.show_tool("text")
+    c5.set_font_size(20)
+    t2 = c5.add_annotation({"type": "text", "center": [300, 300],
+                            "text": "软选", "font_size": 44, "color": "#111111"})
+    c5._soft_select(t2)
+    assert sidebar._ctl["text"]["字号"].value() == 44, \
+        "文字工具软选中时侧栏未显示标注属性"
+    c5.set_font_size(50)
+    assert t2.anno["font_size"] == 50 and c5._font_size == 20, \
+        "文字软选中编辑不应影响新标注默认值"
+    c5._scene.clearSelection()
+    c5.set_tool("select")
+    sidebar.show_tool("select")
+
     # 橡皮擦大小
     c5.set_eraser_size(33)
     assert c5._eraser_size == 33
