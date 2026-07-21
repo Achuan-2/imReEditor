@@ -376,6 +376,22 @@ def run():
     n5 = c5.add_annotation({"type": "number", "center": [500, 100], "n": 1})
     assert n5.anno["r"] == 30.0, "序号半径默认值未写入"
 
+    # 序号值：无选中时编辑计数器（起始值），选中时编辑该标注并顺推计数器
+    c5._scene.clearSelection()
+    c5.set_number_value(5)
+    assert c5.number_counter == 5, "序号起始值未生效"
+    n5.setSelected(True)
+    c5.set_number_value(7)
+    assert n5.anno["n"] == 7, "序号值未作用于选中标注"
+    assert c5.number_counter == 8, "修改选中序号后计数器未顺推"
+    sidebar.show_tool("select")
+    assert sidebar._ctl["number"]["序号值"].value() == 7, \
+        "侧栏未同步选中序号的值"
+    c5._scene.clearSelection()
+    sidebar.show_tool("number")
+    assert sidebar._ctl["number"]["序号值"].value() == 8, \
+        "侧栏未同步序号计数器"
+
     # 橡皮擦大小
     c5.set_eraser_size(33)
     assert c5._eraser_size == 33

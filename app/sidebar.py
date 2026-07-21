@@ -184,6 +184,8 @@ class ToolSidebar(QDockWidget):
         self._add_color("number", form, "颜色", c._color.name(), c.set_color)
         self._add_spin("number", form, "大小", 8, 80, c._number_r,
                        c.set_number_r)
+        self._add_spin("number", form, "序号值", 1, 9999, c.number_counter,
+                       c.set_number_value)
 
         # 文字
         form = self._add_page("text", "文本设置")
@@ -303,6 +305,7 @@ class ToolSidebar(QDockWidget):
         elif key == "number":
             set_color_btn("颜色", src("color", c._color.name()))
             set_spin("大小", src("r", c._number_r))
+            set_spin("序号值", src("n", c.number_counter))
         elif key == "text":
             family = src("font_family", c._font_family) or "Microsoft YaHei"
             fc = ctl["字体"]

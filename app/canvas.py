@@ -561,6 +561,16 @@ class EditorCanvas(QGraphicsView):
         self._apply(self._for_selected(("number",)),
                     lambda a: a.__setitem__("r", float(r)), geometry=True)
 
+    def set_number_value(self, n):
+        """编辑序号值：选中序号标注时改它的值并顺推计数器；
+        无选中时设置下一个序号的起始值。"""
+        sel = self._for_selected(("number",))
+        if sel:
+            self._apply(sel, lambda a: a.__setitem__("n", n))
+            self.number_counter = n + 1
+        else:
+            self.number_counter = n
+
     def set_eraser_size(self, size):
         self._eraser_size = size
 
@@ -1126,6 +1136,7 @@ class EditorCanvas(QGraphicsView):
                                  "center": [pos.x(), pos.y()],
                                  "n": self.number_counter, "width": 2})
             self.number_counter += 1
+            self.selection_changed.emit()  # 侧栏「序号值」跟随计数器
             self._mouse_down = False
         elif tool == "text":
             self._start_text_editor(pos)
