@@ -1252,6 +1252,9 @@ class EditorCanvas(QGraphicsView):
                 tiny = len(anno["points"]) < 2
             if tiny:
                 self._scene.removeItem(self._current)
+            else:
+                # 绘制完成自动选中新形状，便于立即调参/移动/缩放
+                self._soft_select(self._current)
             self._current = None
 
         if self._dirty_after_drag:

@@ -613,6 +613,19 @@ def run():
     c9.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(vp5),
                                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
     assert len(c9.collect_annotations()) == count0 + 1, "点空白后应正常新增"
+    # 绘制完成自动选中新形状，便于立即编辑
+    new_items = [it for it in c9._anno_items() if it is not target]
+    assert len(new_items) == 1 and new_items[0].isSelected(), \
+        "绘制完成未自动选中新形状"
+    assert c9._selection_box.target() is new_items[0], "选框未跟随新形状"
+    # 单击（未拖动）产生的微小形状不保留、不选中
+    vp6 = c9.mapFromScene(QPointF(780, 580))
+    c9.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(vp6),
+                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    c9.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(vp6),
+                                     Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert len(c9.collect_annotations()) == count0 + 1, "微小形状不应保留"
+    assert not c9._scene.selectedItems(), "微小形状不应被选中"
 
     print("SELFTEST PASS")
     print(f"  测试产物目录: {tmpdir}")
