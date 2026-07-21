@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
 from app import io as editor_io
-from app.annotations import translate_anno
+from app.annotations import anno_bbox, translate_anno
 from app.canvas import EditorCanvas
 
 W, H = 800, 600
@@ -626,6 +626,102 @@ def run():
                                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
     assert len(c9.collect_annotations()) == count0 + 1, "微小形状不应保留"
     assert not c9._scene.selectedItems(), "微小形状不应被选中"
+
+    # 17. 选框旋转按钮：拖动旋转、Shift 吸附、旋转后缩放、马赛克不支持、持久化
+    c10 = _make_canvas()
+    c10.resize(900, 700)
+    rot_rect = c10.add_annotation({"type": "rect", "rect": [100, 100, 200, 120],
+                                   "color": "#FF0000", "width": 3})
+    c10.set_tool("select")
+    rot_rect.setSelected(True)
+    sb = c10._selection_box
+    assert sb.target() is rot_rect
+    bp = c10.mapFromScene(sb.rotate_pos())
+    c10.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(bp),
+                                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert c10._rotate is not None, "旋转按钮未进入旋转拖拽"
+    # 按钮在选框正下方（起始角 90°），拖到中心正右方（角度 0°）→ 旋转 -90°
+    vp_r = c10.mapFromScene(QPointF(300, 160))
+    c10.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(vp_r),
+                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    c10.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(vp_r),
+                                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert abs(rot_rect.anno["rotation"] - (-90)) < 1.5, \
+        f"旋转角度错误: {rot_rect.anno.get('rotation')}"
+    # 包围盒跟随旋转：200x120 绕中心 (200,160) 转 90° → 120x200
+    bb = anno_bbox(rot_rect.anno)
+    assert abs(bb.width() - 120) < 1.5 and abs(bb.height() - 200) < 1.5, \
+        f"旋转后包围盒错误: {bb}"
+    c10.render_final()  # 旋转渲染不报错
+    # 选框绘制冒烟（含旋转按钮图标）
+    _img3 = QImage(900, 700, QImage.Format_ARGB32_Premultiplied)
+    _p3 = QPainter(_img3)
+    sb.paint(_p3, QStyleOptionGraphicsItem(), None)
+    _p3.end()
+    # Shift 吸附到 15° 步进
+    bp2 = c10.mapFromScene(sb.rotate_pos())
+    c10.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(bp2),
+                                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    vp_r2 = c10.mapFromScene(QPointF(280, 300))
+    c10.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(vp_r2),
+                                   Qt.LeftButton, Qt.LeftButton,
+                                   Qt.ShiftModifier))
+    c10.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(vp_r2),
+                                      Qt.LeftButton, Qt.NoButton,
+                                      Qt.ShiftModifier))
+    snapped = rot_rect.anno["rotation"]
+    assert abs(snapped / 15.0 - round(snapped / 15.0)) < 1e-6, \
+        f"Shift 未吸附到 15° 步进: {snapped}"
+    # 马赛克不支持旋转
+    mos10 = c10.add_annotation({"type": "mosaic", "rect": [500, 400, 120, 80]})
+    c10._scene.clearSelection()
+    mos10.setSelected(True)
+    assert not sb.rotate_at_view(c10.mapFromScene(sb.rotate_pos())), \
+        "马赛克不应提供旋转按钮"
+    c10._scene.clearSelection()
+    rot_rect.setSelected(True)
+    # 旋转随元数据保存/恢复
+    p_rot = os.path.join(tmpdir, "rot.png")
+    editor_io.save_with_metadata(p_rot, c10.render_final(), c10.base_image,
+                                 c10.collect_annotations())
+    _, anns_rot, _, _, _ = editor_io.load_image(p_rot)
+    rot_loaded = next(a for a in anns_rot if a["type"] == "rect")
+    assert abs(rot_loaded.get("rotation", 0) - snapped) < 1e-6, \
+        "旋转角度未随元数据保存"
+    # 绘制工具下软选中也可用旋转按钮
+    c10.set_tool("rect")
+    vp_hit = c10.mapFromScene(QPointF(200, 160))
+    c10.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(vp_hit),
+                                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert rot_rect.isSelected(), "绘制工具下未软选中旋转后的标注"
+    c10.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease,
+                                      QPointF(vp_hit), Qt.LeftButton,
+                                      Qt.NoButton, Qt.NoModifier))
+    bp3 = c10.mapFromScene(sb.rotate_pos())
+    c10.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(bp3),
+                                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert c10._rotate is not None, "绘制工具下旋转按钮未生效"
+    c10.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(bp3),
+                                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    # 旋转后的手柄缩放：拖拽点自动逆旋转回标注坐标系
+    rot_rect.anno["rotation"] = 90.0
+    rot_rect.update_geometry()
+    sb.refresh()
+    hp = sb.handles()["br"]
+    assert abs(hp.x() - 140) < 2 and abs(hp.y() - 260) < 2, \
+        f"旋转后手柄位置错误: {hp}"
+    hb = c10.mapFromScene(hp)
+    c10.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(hb),
+                                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert c10._resize is not None, "旋转后手柄缩放未进入"
+    vp_dn = c10.mapFromScene(QPointF(140, 360))
+    c10.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(vp_dn),
+                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    c10.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(vp_dn),
+                                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    rr = rot_rect.anno["rect"]
+    assert abs(rr[2] - 300) < 2 and abs(rr[3] - 120) < 2, \
+        f"旋转后缩放宽高错误: {rr}"
 
     print("SELFTEST PASS")
     print(f"  测试产物目录: {tmpdir}")

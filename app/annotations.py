@@ -10,6 +10,9 @@
 - text: center: [x, y], text, font_size, rotation(角度)
 - number(序号): center: [x, y], n, r
 
+除马赛克外各类标注均可带 rotation（绕自身包围盒中心旋转的角度，
+选框上的旋转按钮拖动设置；文字自带走字旋转，沿用同一字段）。
+
 坐标均为场景坐标（= 图片像素坐标），锚点统一使用中心点或矩形框，
 这样翻转 / 旋转 / 裁剪对所有标注都是纯粹的坐标变换，不会丢失可编辑性。
 """
@@ -111,13 +114,13 @@ def translate_anno(anno, dx, dy):
 
 def flip_h_anno(anno, img_w):
     _point_transform(anno, lambda x, y: (img_w - x, y))
-    if anno["type"] == "text":
+    if anno["type"] == "text" or anno.get("rotation"):
         anno["rotation"] = -anno.get("rotation", 0.0)
 
 
 def flip_v_anno(anno, img_h):
     _point_transform(anno, lambda x, y: (x, img_h - y))
-    if anno["type"] == "text":
+    if anno["type"] == "text" or anno.get("rotation"):
         anno["rotation"] = -anno.get("rotation", 0.0)
 
 
@@ -127,7 +130,7 @@ def rotate_anno(anno, img_w, img_h, cw):
         _point_transform(anno, lambda x, y: (img_h - y, x))
     else:
         _point_transform(anno, lambda x, y: (y, img_w - x))
-    if anno["type"] == "text":
+    if anno["type"] == "text" or anno.get("rotation"):
         anno["rotation"] = anno.get("rotation", 0.0) + (90 if cw else -90)
 
 
@@ -190,8 +193,18 @@ def apply_bbox_resize(anno, orig_anno, orig_bbox, new_bbox):
         anno["center"] = [new_bbox.center().x(), new_bbox.center().y()]
 
 
-def anno_bbox(anno):
-    """标注在场景坐标下的紧凑包围盒（不含画笔宽度），用于裁剪相交判断。"""
+def _rotate_rect(rect, rotation):
+    """rect 绕其中心旋转 rotation 度后的轴对齐包围盒。"""
+    if not rotation:
+        return rect
+    c = rect.center()
+    tr = QTransform().translate(c.x(), c.y()).rotate(rotation) \
+        .translate(-c.x(), -c.y())
+    return tr.mapRect(rect)
+
+
+def base_anno_bbox(anno):
+    """未应用旋转的紧凑包围盒（旋转以其中心为轴）。"""
     t = anno["type"]
     if t in ("rect", "ellipse", "mosaic"):
         return QRectF(*anno["rect"])
@@ -208,10 +221,15 @@ def anno_bbox(anno):
         cx, cy = anno["center"]
         pad = int(anno.get("outline_width", 0) or 0) \
             + (4 if anno.get("bg_color") else 0)
-        tr = QTransform().translate(cx, cy).rotate(anno.get("rotation", 0.0))
-        return tr.mapRect(QRectF(-w / 2 - pad, -h / 2 - pad,
-                                 w + 2 * pad, h + 2 * pad))
+        return QRectF(cx - w / 2 - pad, cy - h / 2 - pad,
+                      w + 2 * pad, h + 2 * pad)
     return QRectF()
+
+
+def anno_bbox(anno):
+    """标注在场景坐标下的紧凑包围盒（含旋转，不含画笔宽度），
+    用于裁剪相交判断与选框。"""
+    return _rotate_rect(base_anno_bbox(anno), anno.get("rotation", 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +246,35 @@ def _fill_brush(a):
     return QBrush(color)
 
 
+def _base_visual_rect(a):
+    """图元未旋转的绘制包围盒（含画笔宽度冗余，文字的旋转也不计入）。"""
+    t = a["type"]
+    pad = a.get("width", 3) / 2.0 + 2.0
+    if t == "text":
+        w, h, _ = measure_text(a)
+        cx, cy = a["center"]
+        pad = 3 + int(a.get("outline_width", 0) or 0) \
+            + (4 if a.get("bg_color") else 0)
+        return QRectF(cx - w / 2 - pad, cy - h / 2 - pad,
+                      w + 2 * pad, h + 2 * pad)
+    if t == "mosaic":
+        return QRectF(*a["rect"])
+    if t in ("rect", "ellipse"):
+        return QRectF(*a["rect"]).adjusted(-pad, -pad, pad, pad)
+    if t in ("line", "arrow"):
+        r = QRectF(QPointF(*a["p1"]), QPointF(*a["p2"])).normalized()
+        extra = pad + (max(10.0, a.get("width", 3) * 4.0) if t == "arrow" else 0.0)
+        return r.adjusted(-extra, -extra, extra, extra)
+    if t == "path":
+        return path_from_points(a["points"]).boundingRect().adjusted(
+            -pad, -pad, pad, pad)
+    if t == "number":
+        cx, cy = a["center"]
+        r = a.get("r", 14.0) + pad
+        return QRectF(cx - r, cy - r, 2 * r, 2 * r)
+    return QRectF()
+
+
 class AnnotationItem(QGraphicsItem):
     """所有标注共用的 QGraphicsItem，几何数据直接取自 anno dict。"""
 
@@ -240,38 +287,21 @@ class AnnotationItem(QGraphicsItem):
     # -- Qt 接口 -----------------------------------------------------------
 
     def boundingRect(self):
-        a = self.anno
-        t = a["type"]
-        pad = a.get("width", 3) / 2.0 + 2.0
-        if t == "text":
-            w, h, _ = measure_text(a)
-            cx, cy = a["center"]
-            pad = 3 + int(a.get("outline_width", 0) or 0) \
-                + (4 if a.get("bg_color") else 0)
-            tr = QTransform().translate(cx, cy).rotate(a.get("rotation", 0.0))
-            return tr.mapRect(QRectF(-w / 2 - pad, -h / 2 - pad,
-                                     w + 2 * pad, h + 2 * pad))
-        if t == "mosaic":
-            return QRectF(*a["rect"])
-        if t in ("rect", "ellipse"):
-            return QRectF(*a["rect"]).adjusted(-pad, -pad, pad, pad)
-        if t in ("line", "arrow"):
-            r = QRectF(QPointF(*a["p1"]), QPointF(*a["p2"])).normalized()
-            extra = pad + (max(10.0, a.get("width", 3) * 4.0) if t == "arrow" else 0.0)
-            return r.adjusted(-extra, -extra, extra, extra)
-        if t == "path":
-            return path_from_points(a["points"]).boundingRect().adjusted(
-                -pad, -pad, pad, pad)
-        if t == "number":
-            cx, cy = a["center"]
-            r = a.get("r", 14.0) + pad
-            return QRectF(cx - r, cy - r, 2 * r, 2 * r)
-        return QRectF()
+        rect = _base_visual_rect(self.anno)
+        return _rotate_rect(rect, self.anno.get("rotation", 0.0))
 
     def paint(self, painter, option, widget=None):
         a = self.anno
         t = a["type"]
         painter.setRenderHint(QPainter.Antialiasing)
+        # 绕未旋转包围盒中心旋转（文字分支自带旋转，不重复包装）
+        rotated = bool(a.get("rotation", 0.0)) and t != "text"
+        if rotated:
+            c = _base_visual_rect(a).center()
+            painter.save()
+            painter.translate(c.x(), c.y())
+            painter.rotate(a.get("rotation", 0.0))
+            painter.translate(-c.x(), -c.y())
 
         if t == "mosaic":
             r = QRectF(*a["rect"])
@@ -354,6 +384,8 @@ class AnnotationItem(QGraphicsItem):
                     painter.setPen(QPen(color))
                     painter.drawText(rect, Qt.AlignCenter, a.get("text", ""))
                 painter.restore()
+        if rotated:
+            painter.restore()
         # 选中态由画布的 SelectionBox 覆盖层统一绘制，
         # 此处不画，保证导出/马赛克合成渲染永远干净。
 

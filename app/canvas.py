@@ -8,6 +8,7 @@
 """
 
 import copy
+import math
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QTransform
@@ -23,6 +24,7 @@ from .annotations import (
     AnnotationItem,
     anno_bbox,
     apply_bbox_resize,
+    base_anno_bbox,
     bbox_with_handle,
     flip_h_anno,
     flip_v_anno,
@@ -52,17 +54,19 @@ _ADJUST_TYPES = {
 
 
 class SelectionBox(QGraphicsItem):
-    """单选标注的选框覆盖层：包围盒 + 8 个缩放手柄。
+    """单选标注的选框覆盖层：包围盒 + 8 个缩放手柄 + 底部旋转按钮。
 
     不接收鼠标事件（事件穿透到底层标注），由画布视图统一处理交互；
     渲染输出时被隐藏，不会出现在保存结果里。
+    选框随标注 rotation 一起旋转；马赛克区域不支持旋转（不画按钮）。
     """
 
     def __init__(self, view):
         super().__init__()
         self._view = view
         self._target = None
-        self._rect = QRectF()
+        self._rect = QRectF()  # 未旋转的基准包围盒（旋转绕其中心）
+        self._rotation = 0.0
         self.setZValue(1e9)
         self.setAcceptedMouseButtons(Qt.NoButton)
         self.hide()
@@ -84,18 +88,30 @@ class SelectionBox(QGraphicsItem):
         if self._target is None:
             return
         self.prepareGeometryChange()
-        self._rect = self._target.mapRectToScene(anno_bbox(self._target.anno))
+        self._rect = self._target.mapRectToScene(
+            base_anno_bbox(self._target.anno))
+        self._rotation = self._target.anno.get("rotation", 0.0)
         self.update()
+
+    def _rot_tr(self):
+        """绕选框中心的旋转变换（未旋转时返回 None）。"""
+        if not self._rotation:
+            return None
+        c = self._rect.center()
+        return QTransform().translate(c.x(), c.y()) \
+            .rotate(self._rotation).translate(-c.x(), -c.y())
 
     def handles(self):
         r = self._rect
         cx, cy = r.center().x(), r.center().y()
-        return {
+        pts = {
             "tl": r.topLeft(), "tc": QPointF(cx, r.top()), "tr": r.topRight(),
             "rc": QPointF(r.right(), cy), "br": r.bottomRight(),
             "bc": QPointF(cx, r.bottom()), "bl": r.bottomLeft(),
             "lc": QPointF(r.left(), cy),
         }
+        tr = self._rot_tr()
+        return {k: tr.map(p) for k, p in pts.items()} if tr else pts
 
     def handle_at_view(self, view_pos):
         """视图坐标下的手柄命中检测（容差 6 屏幕像素）。"""
@@ -107,20 +123,71 @@ class SelectionBox(QGraphicsItem):
                 return hid
         return None
 
+    def rotate_pos(self):
+        """旋转按钮中心（场景坐标）：选框底边中点外侧，随标注一起旋转。"""
+        scale = max(self._view.transform().m11(), 0.25)
+        p = QPointF(self._rect.center().x(), self._rect.bottom() + 30.0 / scale)
+        tr = self._rot_tr()
+        return tr.map(p) if tr else p
+
+    def rotate_at_view(self, view_pos):
+        """旋转按钮命中检测（容差 10 屏幕像素；马赛克不支持旋转）。"""
+        if not self.isVisible() or self._target is None \
+                or self._target.anno.get("type") == "mosaic":
+            return False
+        bp = self._view.mapFromScene(self.rotate_pos())
+        return abs(bp.x() - view_pos.x()) <= 10 \
+            and abs(bp.y() - view_pos.y()) <= 10
+
     def boundingRect(self):
-        return self._rect.adjusted(-40, -40, 40, 40)
+        base = self._rect
+        tr = self._rot_tr()
+        if tr:
+            base = tr.mapRect(base)
+        scale = max(self._view.transform().m11(), 0.25)
+        pad = 50.0 / scale  # 容纳手柄与外侧旋转按钮
+        return base.adjusted(-pad, -pad, pad, pad)
 
     def paint(self, painter, option, widget=None):
         if self._target is None:
             return
         scale = max(self._view.transform().m11(), 0.25)
         hs = 8.0 / scale  # 手柄保持恒定屏幕尺寸
+        c = self._rect.center()
+        painter.save()
+        painter.translate(c.x(), c.y())
+        painter.rotate(self._rotation)
+        painter.translate(-c.x(), -c.y())
         painter.setPen(QPen(QColor("#1E78FF"), max(1.0, 1.5 / scale)))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(self._rect)
+        painter.restore()
+        painter.setPen(QPen(QColor("#1E78FF"), max(1.0, 1.5 / scale)))
         painter.setBrush(QColor("white"))
         for hp in self.handles().values():
             painter.drawRect(QRectF(hp.x() - hs / 2, hp.y() - hs / 2, hs, hs))
+        if self._target.anno.get("type") == "mosaic":
+            return
+        # 旋转按钮：圆形底 + 圆弧箭头图标
+        bp = self.rotate_pos()
+        rad = 10.0 / scale
+        painter.setBrush(QColor("white"))
+        painter.drawEllipse(bp, rad, rad)
+        ar = rad * 0.55
+        painter.setPen(QPen(QColor("#1E78FF"), max(1.2, 1.8 / scale),
+                            Qt.SolidLine, Qt.RoundCap))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawArc(QRectF(bp.x() - ar, bp.y() - ar, 2 * ar, 2 * ar),
+                        40 * 16, 280 * 16)
+        # 箭头位于圆弧终点（40° + 280° = 320°），沿运动切线方向
+        a = math.radians(320)
+        tip = QPointF(bp.x() + ar * math.cos(a), bp.y() - ar * math.sin(a))
+        ta = math.atan2(-math.cos(a), -math.sin(a))
+        L = 5.0 / scale
+        for s in (1.0, -1.0):
+            ang = ta + s * math.radians(140)
+            painter.drawLine(tip, QPointF(tip.x() + L * math.cos(ang),
+                                          tip.y() + L * math.sin(ang)))
 
 
 class CropOverlay(QGraphicsItem):
@@ -306,6 +373,7 @@ class EditorCanvas(QGraphicsView):
         self._selection_box = SelectionBox(self)
         self._scene.addItem(self._selection_box)
         self._resize = None
+        self._rotate = None
         self._scene.selectionChanged.connect(self._update_selection_box)
         self.viewport().setMouseTracking(True)
 
@@ -1049,16 +1117,24 @@ class EditorCanvas(QGraphicsView):
         item = self._selection_box.target()
         if item is None:
             return
+        bbox = item.mapRectToScene(base_anno_bbox(item.anno))
         self._resize = {
             "item": item,
             "handle": handle,
             "anno": copy.deepcopy(item.anno),
-            "bbox": item.mapRectToScene(anno_bbox(item.anno)),
+            "bbox": bbox,  # 未旋转坐标系下的基准包围盒
+            "rotation": item.anno.get("rotation", 0.0),
+            "center": bbox.center(),
         }
         self._mouse_down = True  # 让马赛克刷新延迟到缩放结束
 
     def _update_resize(self, pos):
         st = self._resize
+        if st["rotation"]:  # 拖拽点先逆旋转回标注的未旋转坐标系
+            c = st["center"]
+            tr = QTransform().translate(c.x(), c.y()) \
+                .rotate(-st["rotation"]).translate(-c.x(), -c.y())
+            pos = tr.map(pos)
         new_bbox = bbox_with_handle(st["bbox"], st["handle"], pos)
         apply_bbox_resize(st["item"].anno, st["anno"], st["bbox"], new_bbox)
         st["item"].update_geometry()
@@ -1072,7 +1148,48 @@ class EditorCanvas(QGraphicsView):
             self._dirty_after_drag = False
             self.refresh_mosaics()
 
+    # ------------------------------------------------------------------
+    # 选框旋转按钮拖拽
+    # ------------------------------------------------------------------
+
+    def _begin_rotate(self, pos):
+        item = self._selection_box.target()
+        if item is None:
+            return
+        c = item.mapRectToScene(base_anno_bbox(item.anno)).center()
+        self._rotate = {
+            "item": item,
+            "center": c,
+            "start_angle": math.degrees(
+                math.atan2(pos.y() - c.y(), pos.x() - c.x())),
+            "orig_rotation": item.anno.get("rotation", 0.0),
+        }
+        self._mouse_down = True  # 让马赛克刷新延迟到旋转结束
+
+    def _update_rotate(self, pos, modifiers=Qt.NoModifier):
+        st = self._rotate
+        c = st["center"]
+        angle = math.degrees(math.atan2(pos.y() - c.y(), pos.x() - c.x()))
+        rot = st["orig_rotation"] + (angle - st["start_angle"])
+        if modifiers & Qt.ShiftModifier:
+            rot = round(rot / 15.0) * 15.0  # Shift：吸附到 15° 步进
+        st["item"].prepareGeometryChange()
+        st["item"].anno["rotation"] = (rot + 180.0) % 360.0 - 180.0
+        st["item"].update()
+        self._selection_box.refresh()
+        self.mark_dirty()
+
+    def _end_rotate(self):
+        self._rotate = None
+        self._mouse_down = False
+        if self._dirty_after_drag:
+            self._dirty_after_drag = False
+            self.refresh_mosaics()
+
     def _update_hover_cursor(self, view_pos):
+        if self._selection_box.rotate_at_view(view_pos):
+            self.viewport().setCursor(Qt.PointingHandCursor)
+            return
         hid = self._selection_box.handle_at_view(view_pos)
         self.viewport().setCursor(
             _HANDLE_CURSORS[hid] if hid else Qt.ArrowCursor)
@@ -1126,7 +1243,11 @@ class EditorCanvas(QGraphicsView):
             self._crop_press(event)
             return
         if self._tool == "select":
-            hid = self._selection_box.handle_at_view(event.position().toPoint())
+            vp = event.position().toPoint()
+            if self._selection_box.rotate_at_view(vp):
+                self._begin_rotate(self._to_scene(event))
+                return
+            hid = self._selection_box.handle_at_view(vp)
             if hid:
                 self._begin_resize(hid)
                 return
@@ -1138,9 +1259,13 @@ class EditorCanvas(QGraphicsView):
         if self._text_editor is not None:
             self._commit_text_editor(self._text_editor, cancel=False)
 
-        # 即选即调：已显示选框时先查手柄；再查同类型标注本体
+        # 即选即调：已显示选框时先查旋转按钮与手柄；再查同类型标注本体
         if self._selection_box.isVisible():
-            hid = self._selection_box.handle_at_view(event.position().toPoint())
+            vp = event.position().toPoint()
+            if self._selection_box.rotate_at_view(vp):
+                self._begin_rotate(pos)
+                return
+            hid = self._selection_box.handle_at_view(vp)
             if hid:
                 self._begin_resize(hid)
                 return
@@ -1182,6 +1307,9 @@ class EditorCanvas(QGraphicsView):
         if self._crop_mode:
             self._crop_move(event)
             return
+        if self._rotate:
+            self._update_rotate(self._to_scene(event), event.modifiers())
+            return
         if self._resize:
             self._update_resize(self._to_scene(event))
             return
@@ -1219,6 +1347,9 @@ class EditorCanvas(QGraphicsView):
     def mouseReleaseEvent(self, event):
         if self._crop_mode:
             self._crop_drag = None
+            return
+        if self._rotate:
+            self._end_rotate()
             return
         if self._resize:
             self._end_resize()
