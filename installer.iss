@@ -3,7 +3,7 @@
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer.iss
 
 #define AppName "imgReEditor"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppExe "imgReEditor.exe"
 
 [Setup]
